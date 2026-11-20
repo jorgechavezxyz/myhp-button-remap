@@ -64,8 +64,15 @@ internal static class AppWindowToggle
 
         if (focused != IntPtr.Zero)
         {
-            if (!ShowWindowAsync(focused, 6)) // SW_MINIMIZE
-                throw new InvalidOperationException("Windows could not minimize the app window.");
+            // Ask the window to minimize itself, as the taskbar does. Windows blocks ShowWindow on apps
+            // running as administrator (such as WireGuard), but this request still reaches them.
+            PostMessage(focused, WM_SYSCOMMAND, SC_MINIMIZE, IntPtr.Zero);
+            if (!WaitUntil(() => IsIconic(focused) || !IsWindowVisible(focused)))
+            {
+                ShowWindowAsync(focused, 6); // SW_MINIMIZE
+                if (!WaitUntil(() => IsIconic(focused) || !IsWindowVisible(focused)))
+                    throw new InvalidOperationException("The app did not minimize. It may ignore minimize requests.");
+            }
             return true;
         }
 
@@ -76,13 +83,24 @@ internal static class AppWindowToggle
         // Become the last input sender so Windows allows this background app to change the foreground window.
         KeyboardShortcut.SendEmptyMouseInput();
 
-        // Restore minimized windows and show tray-hidden windows without resizing visible ones.
-        if (IsIconic(selected) || selected == hidden)
+        // Restore minimized windows without resizing visible ones. Like minimizing, restoring is requested
+        // through WM_SYSCOMMAND first so it also works for apps running as administrator.
+        if (IsIconic(selected))
         {
-            int command = IsIconic(selected) ? 9 : 5; // SW_RESTORE / SW_SHOW
-            if (!ShowWindowAsync(selected, command) ||
-                !SpinWait.SpinUntil(() => IsWindowVisible(selected) && !IsIconic(selected), 500))
-                throw new InvalidOperationException("Windows could not restore the app window.");
+            PostMessage(selected, WM_SYSCOMMAND, SC_RESTORE, IntPtr.Zero);
+            if (!WaitUntil(() => !IsIconic(selected)))
+            {
+                ShowWindowAsync(selected, 9); // SW_RESTORE
+                if (!WaitUntil(() => !IsIconic(selected)))
+                    throw new InvalidOperationException("Windows could not restore the app window.");
+            }
+        }
+        else if (selected == hidden)
+        {
+            // A window hidden in the tray. If Windows will not show it (for example because the app runs as
+            // administrator), launch the app instead: single-instance apps then show their own window.
+            if (!ShowWindowAsync(selected, 5) || !WaitUntil(() => IsWindowVisible(selected))) // SW_SHOW
+                return false;
         }
 
         if (!SetForegroundWindow(selected) && GetForegroundWindow() != selected)
@@ -92,6 +110,12 @@ internal static class AppWindowToggle
         }
         return true;
     }
+
+    private const uint WM_SYSCOMMAND = 0x0112;
+    private static readonly IntPtr SC_MINIMIZE = 0xF020;
+    private static readonly IntPtr SC_RESTORE = 0xF120;
+
+    private static bool WaitUntil(Func<bool> condition) => SpinWait.SpinUntil(condition, 500);
 
     private static readonly int CurrentSession = GetCurrentSession();
 
@@ -175,6 +199,7 @@ internal static class AppWindowToggle
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern bool FlashWindow(IntPtr window, bool invert);
     [DllImport("kernel32.dll")] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
