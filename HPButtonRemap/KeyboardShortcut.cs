@@ -66,15 +66,37 @@ internal static class KeyboardShortcut
         if (sent == inputs.Length)
             return;
 
-        int stillPressed = (int)Math.Min(sent, (uint)keys.Length) - Math.Max(0, (int)sent - keys.Length);
-        if (stillPressed > 0)
+        Keys[] stillPressed = KeysStillPressed(keys, sent);
+        if (stillPressed.Length > 0)
         {
-            int end = (int)Math.Min(sent, (uint)keys.Length);
-            Input[] releases = keys[..end].Reverse().Take(stillPressed).Select(key => CreateInput(key, release: true)).ToArray();
+            Input[] releases = stillPressed.Select(key => CreateInput(key, release: true)).ToArray();
             SendInput((uint)releases.Length, releases, inputSize);
         }
 
         throw new InvalidOperationException("Windows could not send the shortcut. Elevated apps may block simulated keys.");
+    }
+
+    /// <summary>
+    /// Returns the keys left held down after SendInput inserted only <paramref name="sent"/> events,
+    /// in the order they should be released. Presses are sent first; releases follow in reverse order,
+    /// so the last keys in the shortcut are the first to be released.
+    /// </summary>
+    internal static Keys[] KeysStillPressed(Keys[] keys, uint sent)
+    {
+        int pressed = (int)Math.Min(sent, (uint)keys.Length);
+        int released = (int)Math.Min(sent - (uint)pressed, (uint)keys.Length);
+        // Enumerable.Reverse is explicit: on arrays, C# 14 would bind Reverse() to the in-place span overload.
+        return Enumerable.Reverse(keys[..(pressed - released)]).ToArray();
+    }
+
+    /// <summary>
+    /// Sends a zero-movement mouse event. Windows lets the process that sent the last input
+    /// change the foreground window, which a WMI-triggered tray app otherwise cannot do.
+    /// </summary>
+    internal static void SendEmptyMouseInput()
+    {
+        Input[] input = [new Input { Type = 0 }]; // INPUT_MOUSE with no movement or buttons
+        SendInput(1, input, Marshal.SizeOf<Input>());
     }
 
     private static Input CreateInput(Keys key, bool release)
