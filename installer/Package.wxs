@@ -1,6 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="HP Button Remap GUI" Manufacturer="HP Button Remap contributors"
-           Version="1.0.2" Scope="perUser" UpgradeCode="92C4C96C-D20F-4C52-8B3A-99D385FD244A">
+           Version="$(var.Version)" Scope="perUser" UpgradeCode="92C4C96C-D20F-4C52-8B3A-99D385FD244A">
     <MajorUpgrade DowngradeErrorMessage="A newer version of HP Button Remap GUI is installed." />
     <MediaTemplate EmbedCab="yes" />
     <StandardDirectory Id="LocalAppDataFolder">
