@@ -70,7 +70,7 @@ else {
 }
 
 # 2. Fresh state checks.
-$versions = Get-InstalledVersions
+$versions = @(Get-InstalledVersions)
 Check ($versions.Count -eq 1 -and $versions[0] -eq $expectedVersion) "installed version is $expectedVersion"
 Check (Test-Path $msiExe) 'app is installed'
 Check (Test-Path (Join-Path $msiDir 'msi-managed.txt')) 'MSI marker is installed'
