@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      publish_v1:
+        description: Publish HP Button Remap GUI v1.0.0
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -52,16 +57,21 @@ jobs:
           ./publish/HPButtonRemapGUI-win-x64.msi
 
     - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_v1 && github.ref == 'refs/heads/main')
+      uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ github.event_name == 'workflow_dispatch' && 'v1.0.0' || github.ref_name }}
+        target_commitish: ${{ github.sha }}
+        name: HP Button Remap GUI ${{ github.event_name == 'workflow_dispatch' && 'v1.0.0' || github.ref_name }}
+        fail_on_unmatched_files: true
         files: |
           ./publish/app/HPButtonRemap.exe
           ./publish/HPButtonRemapGUI-win-x64.msi
         body: |
-          # HP Button Remap ${{ github.ref_name }}
+          # HP Button Remap GUI
 
-          Run the Windows x64 MSI to install for your account, then open HP Button Remap GUI from Start.
+          Configure the HP logo key from the tray to open an app, a file, or an HTTP(S) website. Changes apply immediately.
+          Run the unsigned Windows x64 MSI to install for your account, then open HP Button Remap GUI from Start.
           The MSI includes the .NET Desktop Runtime. Remove it through Windows Settings → Apps → Installed apps.
           The standalone executable requires the .NET 8 Desktop Runtime.
         generate_release_notes: true
