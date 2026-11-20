@@ -65,6 +65,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private Config? _currentConfig;
     private SettingsForm? _settings;
     private readonly Control _ui = new();
+    private readonly CloseListener _closeListener;
     private readonly RegisteredWaitHandle _settingsWait;
     private readonly System.Windows.Forms.Timer _monitorRetry = new() { Interval = 10_000 };
     private volatile bool _paused;
@@ -103,6 +104,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.DoubleClick += (_, _) => OpenSettings();
         _monitorRetry.Tick += (_, _) => RetryMonitor();
         _ = _ui.Handle;
+        _closeListener = new CloseListener(ExitApplication);
         _settingsWait = ThreadPool.RegisterWaitForSingleObject(settingsSignal,
             (_, _) => PostToTray(OpenSettings), null, Timeout.Infinite, executeOnlyOnce: false);
         ReloadConfiguration();
@@ -535,10 +537,37 @@ del ""{batchPath}""
             _settingsWait.Unregister(null);
             _monitorRetry.Dispose();
             _monitor?.Dispose();
+            _closeListener.DestroyHandle();
             _ui.Dispose();
             _trayIcon.Dispose();
         }
         base.Dispose(disposing);
+    }
+}
+
+/// <summary>
+/// Hidden top-level window that exits the app on WM_CLOSE. Windows Installer sends WM_CLOSE to the app's
+/// windows before upgrades and uninstalls, so the app closes cleanly instead of being terminated.
+/// </summary>
+internal sealed class CloseListener : NativeWindow
+{
+    private const int WM_CLOSE = 0x0010;
+    private readonly Action _close;
+
+    public CloseListener(Action close)
+    {
+        _close = close;
+        CreateHandle(new CreateParams { Caption = "HP Button Remap" });
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_CLOSE)
+        {
+            _close();
+            return;
+        }
+        base.WndProc(ref m);
     }
 }
 
