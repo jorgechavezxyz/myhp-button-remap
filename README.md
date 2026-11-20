@@ -106,9 +106,11 @@ For a portable run, use `HPButtonRemap.exe --portable --settings`. Set `RunAtSta
 
 ## Windows installer
 
-Exit the tray app before installing an update. Run the Windows x64 MSI and open **HP Button Remap GUI** from Start. Installation is per-user, includes the required .NET runtime, and leaves the hotkey unassigned and login startup disabled on first launch. To uninstall, exit the tray app and remove **HP Button Remap GUI** from **Settings → Apps → Installed apps**. Your mapping is retained in `%LOCALAPPDATA%\HPButtonRemapGUI\config.json` for reinstall.
+Run the Windows x64 MSI and follow the setup wizard: accept the license, install, and optionally open Settings on the last page. Installation is per-user, includes the required .NET runtime, and leaves the hotkey unassigned and login startup disabled on first launch. Installing an update closes the running tray app automatically.
 
-The release workflow builds the MSI from `installer/Package.wxs` with WiX. The version comes from `<Version>` in `HPButtonRemap/HPButtonRemap.csproj`; pushing a matching `v*.*.*` tag publishes a release.
+To uninstall, open **Uninstall HP Button Remap GUI** from the Start menu (or run the MSI again) and choose **Remove** in the wizard. **Settings → Apps → Installed apps** also works. Your mapping is retained in `%LOCALAPPDATA%\HPButtonRemapGUI\config.json` for reinstall.
+
+The release workflow builds the MSI from `installer/Package.wxs` with WiX through `installer/build-msi.ps1`, which also generates the wizard's license page from `LICENSE`. The version comes from `<Version>` in `HPButtonRemap/HPButtonRemap.csproj`; pushing a matching `v*.*.*` tag publishes a release.
 
 ## Tests
 
