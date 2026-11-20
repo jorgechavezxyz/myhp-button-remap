@@ -55,12 +55,7 @@ jobs:
       run: |
         dotnet tool install wix --version 5.0.2 --tool-path "${{ runner.temp }}/wix"
         dotnet publish HPButtonRemap/HPButtonRemap.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/installer-app
-        $appDir = (Resolve-Path publish/installer-app).Path
-        $output = Join-Path (Resolve-Path publish).Path "HPButtonRemapGUI-win-x64.msi"
-        Push-Location installer
-        & "${{ runner.temp }}/wix/wix.exe" build Package.wxs -arch x64 -d "AppDir=$appDir" -d "Version=${{ steps.version.outputs.version }}" -o $output
-        if ($LASTEXITCODE) { exit $LASTEXITCODE }
-        Pop-Location
+        ./installer/build-msi.ps1 -AppDir publish/installer-app -Version "${{ steps.version.outputs.version }}" -Output publish/HPButtonRemapGUI-win-x64.msi -Wix "${{ runner.temp }}/wix/wix.exe"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
@@ -85,8 +80,8 @@ jobs:
           # HP Button Remap GUI
 
           Configure the HP logo key from the tray to open an app, a file, or an HTTP(S) website. Changes apply immediately.
-          Run the unsigned Windows x64 MSI to install for your account, then open HP Button Remap GUI from Start.
-          The MSI includes the .NET Desktop Runtime. Remove it through Windows Settings → Apps → Installed apps.
+          Run the unsigned Windows x64 MSI and follow the setup wizard to install for your account. It can open Settings when it finishes.
+          The MSI includes the .NET Desktop Runtime. To uninstall, use "Uninstall HP Button Remap GUI" in the Start menu or Windows Settings → Apps → Installed apps.
           The standalone executable requires the .NET 10 Desktop Runtime.
         generate_release_notes: true
         draft: false
