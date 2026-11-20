@@ -78,7 +78,7 @@ internal static class AppWindowToggle
 
         IntPtr selected = visible != IntPtr.Zero ? visible : hidden;
         if (selected == IntPtr.Zero)
-            throw new InvalidOperationException("The app is already running, but it has no window Windows can restore.");
+            return false; // Running only in the tray: launching it again lets single-instance apps open their window.
 
         // Become the last input sender so Windows allows this background app to change the foreground window.
         KeyboardShortcut.SendEmptyMouseInput();

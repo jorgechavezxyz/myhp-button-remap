@@ -31,7 +31,10 @@ jobs:
         dotnet-version: '10.0.x'
 
     - name: Run tests
-      run: dotnet test tests/HPButtonRemap.Tests/HPButtonRemap.Tests.csproj --configuration Release
+      run: dotnet test tests/HPButtonRemap.Tests/HPButtonRemap.Tests.csproj --configuration Release --filter "Category!=Desktop"
+
+    - name: Run desktop tests (real windows)
+      run: dotnet test tests/HPButtonRemap.Tests/HPButtonRemap.Tests.csproj --configuration Release --filter "Category=Desktop"
 
     - name: Publish app (framework-dependent single file)
       run: dotnet publish HPButtonRemap/HPButtonRemap.csproj --configuration Release --runtime win-x64 --self-contained false -p:PublishSingleFile=true --output ./publish/app
@@ -56,6 +59,17 @@ jobs:
         dotnet tool install wix --version 5.0.2 --tool-path "${{ runner.temp }}/wix"
         dotnet publish HPButtonRemap/HPButtonRemap.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/installer-app
         ./installer/build-msi.ps1 -AppDir publish/installer-app -Version "${{ steps.version.outputs.version }}" -Output publish/HPButtonRemapGUI-win-x64.msi -Wix "${{ runner.temp }}/wix/wix.exe"
+
+    - name: Smoke test install, upgrade, uninstall, and reinstall
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Upgrade from the latest published release when there is one.
+        $previous = Join-Path $env:RUNNER_TEMP 'previous.msi'
+        gh release download --repo "${{ github.repository }}" --pattern 'HPButtonRemapGUI-win-x64.msi' --output $previous
+        if ($LASTEXITCODE) { $previous = $null }
+        ./tests/smoke/smoke-test.ps1 -Msi publish/HPButtonRemapGUI-win-x64.msi -Exe publish/app/HPButtonRemap.exe -PreviousMsi $previous
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

@@ -4,8 +4,11 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <!-- Single source of the release version: the workflow passes it to the MSI and checks the tag. -->
-    <Version>1.0.4</Version>
+    <Version>1.0.5</Version>
     <ApplicationIcon>tray.ico</ApplicationIcon>
+    <!-- Lightweight: ship only English resources and skip loading culture data the app never uses. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>true</InvariantGlobalization>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
