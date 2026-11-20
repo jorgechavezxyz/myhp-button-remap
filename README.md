@@ -4,15 +4,16 @@ Lightweight tray application for remapping HP laptop special function keys (MyHP
 
 ## Features
 
-- run program
-- run command
-- open URL
+- open an app or file (toggles the app's window if it is already running)
+- open a website
+- send a keyboard shortcut
+- run a command (config file only)
 
 ## Requirements
 
 - Windows 10/11
 - HP device exposing `root\wmi` `hpqBEvnt` events
-- .NET 8 Desktop Runtime
+- .NET 10 Desktop Runtime (the MSI includes it)
 
 ## Install
 
@@ -27,7 +28,7 @@ Tray icon -> **Uninstall...**
 
 ## Configuration
 
-Edit `%LOCALAPPDATA%\HPButtonRemap\config.json` and click tray menu -> **Reload Configuration**.
+Edit `%LOCALAPPDATA%\HPButtonRemap\config.json` (MSI installs: `%LOCALAPPDATA%\HPButtonRemapGUI\config.json`) and click tray menu -> **Reload Configuration**. Environment variables such as `%userprofile%` work in `Command` and `WorkingDirectory`. See [CONFIG-EXAMPLES.md](CONFIG-EXAMPLES.md) for every action type.
 
 ### Config shape
 
@@ -105,9 +106,19 @@ For a portable run, use `HPButtonRemap.exe --portable --settings`. Set `RunAtSta
 
 ## Windows installer
 
-Run the Windows x64 MSI and open **HP Button Remap GUI** from Start. Installation is per-user, includes the required .NET runtime, and leaves the hotkey unassigned and login startup disabled on first launch. To uninstall, exit the tray app and remove **HP Button Remap GUI** from **Settings → Apps → Installed apps**. Your mapping is retained in `%LOCALAPPDATA%\HPButtonRemapGUI\config.json` for reinstall.
+Exit the tray app before installing an update. Run the Windows x64 MSI and open **HP Button Remap GUI** from Start. Installation is per-user, includes the required .NET runtime, and leaves the hotkey unassigned and login startup disabled on first launch. To uninstall, exit the tray app and remove **HP Button Remap GUI** from **Settings → Apps → Installed apps**. Your mapping is retained in `%LOCALAPPDATA%\HPButtonRemapGUI\config.json` for reinstall.
 
-The release workflow builds the MSI from `installer/Package.wxs` with WiX.
+The release workflow builds the MSI from `installer/Package.wxs` with WiX. The version comes from `<Version>` in `HPButtonRemap/HPButtonRemap.csproj`; pushing a matching `v*.*.*` tag publishes a release.
+
+## Tests
+
+```powershell
+dotnet test .\tests\HPButtonRemap.Tests\HPButtonRemap.Tests.csproj
+```
+
+## Reliability notes
+
+If the HP key service is not ready when the app starts (common right after sign-in), or it restarts later, the app keeps retrying in the background and shows a notification when the key is ready again. To update the standalone exe, exit the running copy from the tray first; the new exe tells you if it is still running.
 
 ## Testing, shortcuts, and pausing
 
