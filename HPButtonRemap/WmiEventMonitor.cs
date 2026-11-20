@@ -9,14 +9,17 @@ namespace HPButtonRemap;
 public class WmiEventMonitor : IDisposable
 {
     private readonly Action<ButtonAction> _execute;
+    private readonly Action<WmiEventMonitor>? _stoppedUnexpectedly;
     private volatile bool _active;
+    private volatile bool _stopping;
     private ManagementEventWatcher? _watcher;
     private volatile ButtonAction? _action;
     private bool _disposed;
 
-    public WmiEventMonitor(Action<ButtonAction> execute)
+    public WmiEventMonitor(Action<ButtonAction> execute, Action<WmiEventMonitor>? stoppedUnexpectedly = null)
     {
         _execute = execute;
+        _stoppedUnexpectedly = stoppedUnexpectedly;
     }
 
     /// <summary>
@@ -26,6 +29,7 @@ public class WmiEventMonitor : IDisposable
     {
         Debug.WriteLine("Starting HP WMI Event Monitor...");
         StopMonitoring();
+        _stopping = false;
 
         try
         {
@@ -67,6 +71,17 @@ public class WmiEventMonitor : IDisposable
             OnEventArrived();
         };
 
+        // The watcher also stops when the WMI service or HP's event provider restarts.
+        // Report that so the owner can start a new subscription.
+        _watcher.Stopped += (sender, e) =>
+        {
+            if (!_stopping)
+            {
+                Debug.WriteLine($"WMI watcher stopped unexpectedly: {e.Status}");
+                _stoppedUnexpectedly?.Invoke(this);
+            }
+        };
+
         // Start watching
         _watcher.Start();
     }
@@ -93,6 +108,7 @@ public class WmiEventMonitor : IDisposable
     public void StopMonitoring()
     {
         _active = false;
+        _stopping = true;
         Debug.WriteLine("Stopping HP WMI Event Monitor...");
 
         if (_watcher == null)

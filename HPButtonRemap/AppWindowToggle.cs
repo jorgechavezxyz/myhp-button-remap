@@ -20,7 +20,7 @@ internal static class AppWindowToggle
                 try
                 {
                     if (process.SessionId == CurrentSession &&
-                        string.Equals(process.MainModule?.FileName, executable, StringComparison.OrdinalIgnoreCase))
+                        string.Equals(GetProcessPath(process.Id), executable, StringComparison.OrdinalIgnoreCase))
                         matchingProcesses.Add((uint)process.Id);
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
@@ -73,6 +73,9 @@ internal static class AppWindowToggle
         if (selected == IntPtr.Zero)
             throw new InvalidOperationException("The app is already running, but it has no window Windows can restore.");
 
+        // Become the last input sender so Windows allows this background app to change the foreground window.
+        KeyboardShortcut.SendEmptyMouseInput();
+
         // Restore minimized windows and show tray-hidden windows without resizing visible ones.
         if (IsIconic(selected) || selected == hidden)
         {
@@ -96,6 +99,25 @@ internal static class AppWindowToggle
     {
         using var process = Process.GetCurrentProcess();
         return process.SessionId;
+    }
+
+    // QueryFullProcessImageName needs only limited access, so unlike Process.MainModule it is fast
+    // and also works for elevated processes.
+    private static string? GetProcessPath(int processId)
+    {
+        IntPtr handle = OpenProcess(0x1000, false, (uint)processId); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (handle == IntPtr.Zero)
+            return null;
+        try
+        {
+            var buffer = new char[1024];
+            uint size = (uint)buffer.Length;
+            return QueryFullProcessImageName(handle, 0, buffer, ref size) ? new string(buffer, 0, (int)size) : null;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
     }
 
     private static string? GetExecutable(string target)
@@ -155,5 +177,8 @@ internal static class AppWindowToggle
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr window, int command);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern bool FlashWindow(IntPtr window, bool invert);
+    [DllImport("kernel32.dll")] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, [Out] char[] buffer, ref uint size);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr window, uint attribute, out int value, int size);
 }

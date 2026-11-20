@@ -8,6 +8,9 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // Must run before any window (including the bootstrapper's message box) is created.
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+
         if (SelfBootstrapper.TryInstallAndRelaunch(args))
         {
             return;
@@ -15,7 +18,7 @@ static class Program
 
         // Open the signal before acquiring the mutex so a simultaneous launch can always signal it.
         using var showSettings = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\HPButtonRemap.Settings.9B7E50F7");
-        using var instance = new Mutex(true, @"Local\HPButtonRemap.Instance.9B7E50F7", out bool first);
+        using var instance = new Mutex(true, AppPaths.InstanceMutexName, out bool first);
 
         if (!first)
         {
@@ -63,6 +66,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private SettingsForm? _settings;
     private readonly Control _ui = new();
     private readonly RegisteredWaitHandle _settingsWait;
+    private readonly System.Windows.Forms.Timer _monitorRetry = new() { Interval = 10_000 };
     private volatile bool _paused;
     private int _actionRunning;
     private string? _lastError;
@@ -97,6 +101,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
 
         _trayIcon.DoubleClick += (_, _) => OpenSettings();
+        _monitorRetry.Tick += (_, _) => RetryMonitor();
         _ = _ui.Handle;
         _settingsWait = ThreadPool.RegisterWaitForSingleObject(settingsSignal,
             (_, _) => PostToTray(OpenSettings), null, Timeout.Infinite, executeOnlyOnce: false);
@@ -168,46 +173,113 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        WmiEventMonitor? replacement = null;
+        Config candidate;
         try
         {
-            var candidate = _configStore.LoadOrCreateDefault();
-            if (_monitor is null || candidate.EffectiveEventID != _currentConfig?.EffectiveEventID ||
-                candidate.EffectiveEventData != _currentConfig?.EffectiveEventData)
-            {
-                replacement = new WmiEventMonitor(RunHotkeyAction);
-                replacement.StartMonitoring(candidate);
-            }
-
-            SetStartupEnabled(candidate.RunAtStartup);
-            if (replacement is not null)
-            {
-                _monitor?.Dispose();
-                _monitor = replacement;
-                replacement = null;
-                _monitor.Activate();
-            }
-
-            _currentConfig = candidate;
-            _monitor!.UpdateAction(candidate.Action);
-            _runAtStartupItem.Checked = candidate.RunAtStartup;
-            if (candidate.ShowStartupNotification)
-            {
-                string message = candidate.Action is null ? "Choose an action in Settings." : "The HP logo key is ready.";
-                _trayIcon.ShowBalloonTip(2000, "HP Button Remap", message, ToolTipIcon.Info);
-            }
+            candidate = _configStore.LoadOrCreateDefault();
         }
         catch (Exception ex)
         {
-            Notify(_monitor is null
-                ? $"Could not start remapping. {ex.Message}"
+            Notify(_currentConfig is null
+                ? $"Could not read config.json. Use Open Configuration to fix it, then Reload Configuration. {ex.Message}"
                 : $"Could not reload settings. The previous mapping is still active. {ex.Message}");
+            return;
         }
-        finally
+
+        bool eventChanged = _monitor is null ||
+            candidate.EffectiveEventID != _currentConfig?.EffectiveEventID ||
+            candidate.EffectiveEventData != _currentConfig?.EffectiveEventData;
+
+        if (eventChanged && !TryStartMonitor(candidate, out string? error))
         {
-            replacement?.Dispose();
+            if (_monitor is not null)
+            {
+                Notify($"Could not reload settings. The previous mapping is still active. {error}");
+                return;
+            }
+
+            // Nothing is listening yet, usually because HP's WMI provider is not ready right after sign-in.
+            // Keep the configuration so Settings still works, and retry in the background.
+            ApplyConfiguration(candidate);
+            _monitorRetry.Start();
+            Notify($"Waiting for the HP key service. Retrying in the background. {error}");
+            return;
+        }
+
+        ApplyConfiguration(candidate);
+        ShowReadyNotification();
+    }
+
+    private void ApplyConfiguration(Config config)
+    {
+        _currentConfig = config;
+        _monitor?.UpdateAction(config.Action);
+        _runAtStartupItem.Checked = config.RunAtStartup;
+        try
+        {
+            SetStartupEnabled(config.RunAtStartup);
+        }
+        catch (Exception ex)
+        {
+            Notify($"Could not update the startup shortcut. {ex.Message}");
         }
     }
+
+    private void ShowReadyNotification()
+    {
+        if (_currentConfig is not { ShowStartupNotification: true } config)
+            return;
+
+        string message = config.Action is null ? "Choose an action in Settings." : "The HP logo key is ready.";
+        _trayIcon.ShowBalloonTip(2000, "HP Button Remap", message, ToolTipIcon.Info);
+    }
+
+    private bool TryStartMonitor(Config config, out string? error)
+    {
+        var replacement = new WmiEventMonitor(RunHotkeyAction, OnMonitorStopped);
+        try
+        {
+            replacement.StartMonitoring(config);
+        }
+        catch (Exception ex)
+        {
+            replacement.Dispose();
+            error = ex.Message;
+            return false;
+        }
+
+        _monitor?.Dispose();
+        _monitor = replacement;
+        _monitor.Activate();
+        _monitorRetry.Stop();
+        error = null;
+        return true;
+    }
+
+    private void RetryMonitor()
+    {
+        if (_monitor is not null || _currentConfig is not { } config)
+        {
+            _monitorRetry.Stop();
+            return;
+        }
+
+        if (TryStartMonitor(config, out _))
+            ShowReadyNotification();
+    }
+
+    // Called on a WMI thread when the subscription ends without being stopped, for example
+    // after the WMI service or HP's event provider restarts.
+    private void OnMonitorStopped(WmiEventMonitor stopped) => PostToTray(() =>
+    {
+        if (!ReferenceEquals(_monitor, stopped))
+            return;
+
+        stopped.Dispose();
+        _monitor = null;
+        _monitorRetry.Start();
+        Notify("The HP key service stopped. Reconnecting in the background.");
+    });
 
     private void RunHotkeyAction(ButtonAction action)
     {
@@ -255,6 +327,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         if (_currentConfig == null)
         {
+            _runAtStartupItem.Checked = false;
+            Notify("Fix config.json before changing startup settings.");
             return;
         }
 
@@ -291,7 +365,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         if (_currentConfig is not { } config)
+        {
+            Notify("config.json could not be read. Use Open Configuration to fix it, then Reload Configuration.");
             return;
+        }
 
         using var settings = new SettingsForm(config.Action, _executor, action =>
         {
@@ -348,7 +425,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             : "Status: No actions configured";
 
         MessageBox.Show(
-            "HP Button Remap\n\n" +
+            $"HP Button Remap {typeof(Program).Assembly.GetName().Version?.ToString(3)}\n\n" +
             "Actions: OpenFile, OpenWebsite, SendShortcut, RunCommand\n\n" +
             statusText + "\n\n" +
             "Config: " + AppPaths.ConfigPath + "\n\n" +
@@ -445,6 +522,7 @@ del ""{batchPath}""
 
     private void ExitApplication()
     {
+        _monitorRetry.Stop();
         _monitor?.Dispose();
         _trayIcon.Visible = false;
         Application.Exit();
@@ -455,6 +533,7 @@ del ""{batchPath}""
         if (disposing)
         {
             _settingsWait.Unregister(null);
+            _monitorRetry.Dispose();
             _monitor?.Dispose();
             _ui.Dispose();
             _trayIcon.Dispose();
@@ -469,6 +548,8 @@ public static class AppPaths
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "HPButtonRemap"
     );
+
+    public const string InstanceMutexName = @"Local\HPButtonRemap.Instance.9B7E50F7";
 
     public static readonly string InstalledExecutablePath = Path.Combine(InstallDirectory, "HPButtonRemap.exe");
 
@@ -581,50 +662,28 @@ public sealed class StartupShortcutManager
             return;
         }
 
-        var shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!);
-        var shortcut = shell!.GetType().InvokeMember(
-            "CreateShortcut",
-            System.Reflection.BindingFlags.InvokeMethod,
-            null,
-            shell,
-            new object[] { AppPaths.StartupShortcutPath }
-        );
-
-        shortcut!.GetType().InvokeMember(
-            "TargetPath",
-            System.Reflection.BindingFlags.SetProperty,
-            null,
-            shortcut,
-            new object[] { targetPath }
-        );
-        shortcut.GetType().InvokeMember(
-            "Arguments",
-            System.Reflection.BindingFlags.SetProperty,
-            null,
-            shortcut,
-            new object[] { "--portable" }
-        );
-        shortcut.GetType().InvokeMember(
-            "WorkingDirectory",
-            System.Reflection.BindingFlags.SetProperty,
-            null,
-            shortcut,
-            new object[] { workingDirectory }
-        );
-        shortcut.GetType().InvokeMember(
-            "Description",
-            System.Reflection.BindingFlags.SetProperty,
-            null,
-            shortcut,
-            new object[] { "HP Button Remap" }
-        );
-        shortcut.GetType().InvokeMember(
-            "Save",
-            System.Reflection.BindingFlags.InvokeMethod,
-            null,
-            shortcut,
-            null
-        );
+        Type shellType = Type.GetTypeFromProgID("WScript.Shell")
+            ?? throw new InvalidOperationException("Windows Script Host is not available.");
+        object? shell = null;
+        object? shortcut = null;
+        try
+        {
+            shell = Activator.CreateInstance(shellType)!;
+            shortcut = ((dynamic)shell).CreateShortcut(AppPaths.StartupShortcutPath);
+            dynamic link = shortcut!;
+            link.TargetPath = targetPath;
+            link.Arguments = "--portable";
+            link.WorkingDirectory = workingDirectory;
+            link.Description = "HP Button Remap";
+            link.Save();
+        }
+        finally
+        {
+            if (shortcut is not null)
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(shortcut);
+            if (shell is not null)
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(shell);
+        }
     }
 }
 
@@ -654,10 +713,23 @@ public static class SelfBootstrapper
             return false;
         }
 
+        // An installed copy that is running cannot be overwritten. Without this check the copy fails,
+        // the download keeps running from its own folder, and the installed version never updates.
+        if (File.Exists(installedPath) && !FilesMatch(currentPath, installedPath) && IsAnotherCopyRunning())
+        {
+            MessageBox.Show(
+                "HP Button Remap is already running. Exit it from the tray icon, then run this file again to install the update.",
+                "HP Button Remap",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return true;
+        }
+
         try
         {
             Directory.CreateDirectory(AppPaths.InstallDirectory);
-            File.Copy(currentPath, installedPath, true);
+            if (!File.Exists(installedPath) || !FilesMatch(currentPath, installedPath))
+                File.Copy(currentPath, installedPath, true);
 
             string sourceConfig = Path.Combine(Path.GetDirectoryName(currentPath)!, "config.json");
             string targetConfig = Path.Combine(AppPaths.InstallDirectory, "config.json");
@@ -686,5 +758,32 @@ public static class SelfBootstrapper
         }
 
 #endif
+    }
+
+    private static bool FilesMatch(string first, string second)
+    {
+        try
+        {
+            if (new FileInfo(first).Length != new FileInfo(second).Length)
+                return false;
+
+            using var a = File.OpenRead(first);
+            using var b = File.OpenRead(second);
+            return System.Security.Cryptography.SHA256.HashData(a)
+                .AsSpan()
+                .SequenceEqual(System.Security.Cryptography.SHA256.HashData(b));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsAnotherCopyRunning()
+    {
+        if (!Mutex.TryOpenExisting(AppPaths.InstanceMutexName, out var mutex))
+            return false;
+        mutex.Dispose();
+        return true;
     }
 }

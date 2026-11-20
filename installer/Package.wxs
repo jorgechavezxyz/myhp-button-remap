@@ -1,8 +1,32 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="HP Button Remap GUI" Manufacturer="HP Button Remap contributors"
-           Version="1.0.2" Scope="perUser" UpgradeCode="92C4C96C-D20F-4C52-8B3A-99D385FD244A">
+           Version="$(var.Version)" Scope="perUser" UpgradeCode="92C4C96C-D20F-4C52-8B3A-99D385FD244A">
     <MajorUpgrade DowngradeErrorMessage="A newer version of HP Button Remap GUI is installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- Setup wizard: welcome and license, progress, and a finish page that can open Settings.
+         Running the MSI again, the Start menu uninstall shortcut, or Modify in Installed apps
+         opens the same wizard with Repair and Remove. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open HP Button Remap settings" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <CustomAction Id="LaunchSettings" FileRef="AppExe" ExeCommand="--settings"
+                  Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchSettings"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <!-- Close the running tray app first so upgrades and uninstalls never stop on files in use. -->
+    <util:CloseApplication Id="CloseTrayApp" Target="HPButtonRemap.exe" CloseMessage="yes"
+                           TerminateProcess="0" RebootPrompt="no" />
+
+    <Icon Id="AppIcon.ico" SourceFile="..\HPButtonRemap\tray.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="InstallFolder" Name="HP Button Remap GUI">
         <Component Id="ApplicationFiles" Guid="610ECA9A-77E4-4FFE-91F7-A56D0F45007A">
@@ -19,6 +43,9 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut" Guid="45AFD971-A047-4E49-AFEB-E14B14395AC8">
         <Shortcut Id="SettingsShortcut" Name="HP Button Remap GUI" Target="[#AppExe]" Arguments="--settings" WorkingDirectory="InstallFolder" />
+        <Shortcut Id="UninstallShortcut" Name="Uninstall HP Button Remap GUI"
+                  Description="Repair or remove HP Button Remap GUI"
+                  Target="[System64Folder]msiexec.exe" Arguments="/i [ProductCode]" />
         <RegistryValue Root="HKCU" Key="Software\HPButtonRemapGUI" Name="Shortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>

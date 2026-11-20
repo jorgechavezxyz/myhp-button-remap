@@ -47,8 +47,10 @@ public class ActionExecutor
             }
             return null;
         }
-        catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException or ArgumentException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
+            // Report every failure: this runs on the WMI thread or a Settings test task, where an
+            // escaped exception would be silently dropped or shown as an unhandled-exception dialog.
             return $"Could not run the action. {ex.Message}";
         }
     }
@@ -60,7 +62,13 @@ public class ActionExecutor
             throw new InvalidOperationException("No command is configured.");
         }
 
-        if (action.EffectiveCreateNewWindow && TryRunCommandDirect(action.Command, action.WorkingDirectory))
+        // Expand %VARS% so commands such as the default %localappdata%\...\wt.exe can start without a cmd window.
+        string? workingDirectory = string.IsNullOrWhiteSpace(action.WorkingDirectory)
+            ? null
+            : Environment.ExpandEnvironmentVariables(action.WorkingDirectory);
+
+        if (action.EffectiveCreateNewWindow &&
+            TryRunCommandDirect(Environment.ExpandEnvironmentVariables(action.Command), workingDirectory))
         {
             Debug.WriteLine($"Executed command directly: {action.Command}");
             return;
@@ -79,9 +87,9 @@ public class ActionExecutor
             WindowStyle = ProcessWindowStyle.Hidden
         };
 
-        if (!string.IsNullOrWhiteSpace(action.WorkingDirectory))
+        if (workingDirectory is not null)
         {
-            startInfo.WorkingDirectory = action.WorkingDirectory;
+            startInfo.WorkingDirectory = workingDirectory;
         }
 
         using var process = Process.Start(startInfo);
@@ -144,7 +152,7 @@ public class ActionExecutor
         return false;
     }
 
-    private static bool TrySplitCommand(string command, out string fileName, out string arguments)
+    internal static bool TrySplitCommand(string command, out string fileName, out string arguments)
     {
         fileName = string.Empty;
         arguments = string.Empty;
@@ -161,6 +169,13 @@ public class ActionExecutor
 
             fileName = trimmed[1..closingQuote];
             arguments = trimmed[(closingQuote + 1)..].TrimStart();
+            return true;
+        }
+
+        // An unquoted path containing spaces, such as an expanded %localappdata% for a user name with a space.
+        if (File.Exists(trimmed))
+        {
+            fileName = trimmed;
             return true;
         }
 

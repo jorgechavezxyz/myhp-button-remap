@@ -2,7 +2,10 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- Single source of the release version: the workflow passes it to the MSI and checks the tag. -->
+    <Version>1.0.3</Version>
+    <ApplicationIcon>tray.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
@@ -12,6 +15,7 @@
   <ItemGroup>
     <PackageReference Include="System.Management" Version="10.0.1" />
     <EmbeddedResource Include="tray.ico" />
+    <InternalsVisibleTo Include="HPButtonRemap.Tests" />
   </ItemGroup>
 
 </Project>
