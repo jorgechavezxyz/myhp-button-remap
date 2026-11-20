@@ -7,10 +7,13 @@ internal sealed class SettingsForm : Form
     private readonly Button _browse = new() { Text = "Browse…", AutoSize = true };
     private readonly Label _error = new() { AutoSize = true, ForeColor = SystemColors.WindowText, MaximumSize = new Size(450, 0) };
     private readonly Action<ButtonAction> _save;
+    private readonly ActionExecutor _executor;
+    private readonly Button _test = new() { Text = "&Test action", AutoSize = true };
 
-    public SettingsForm(ButtonAction? current, Action<ButtonAction> save)
+    public SettingsForm(ButtonAction? current, ActionExecutor executor, Action<ButtonAction> save)
     {
         _save = save;
+        _executor = executor;
         Text = "HP Button Remap";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -47,23 +50,36 @@ internal sealed class SettingsForm : Form
         var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(saveButton);
+        buttons.Controls.Add(_test);
         layout.Controls.Add(buttons, 0, 5);
         layout.SetColumnSpan(buttons, 2);
         AcceptButton = saveButton;
         CancelButton = cancel;
 
-        _type.Items.AddRange(new object[] { "Open an app or file", "Open a website" });
+        _type.Items.AddRange(new object[] { "Open an app or file", "Open a website", "Send a keyboard shortcut" });
         _type.SelectedIndexChanged += (_, _) =>
         {
             _browse.Enabled = _type.SelectedIndex == 0;
-            _target.PlaceholderText = _browse.Enabled ? @"C:\Path\to\file" : "https://example.com";
+            _target.PlaceholderText = _type.SelectedIndex switch
+            {
+                1 => "https://example.com",
+                2 => "Win+Shift+S",
+                _ => @"C:\Path\to\file"
+            };
             _target.Clear();
+            _error.Text = _type.SelectedIndex == 2 ? KeyboardShortcut.FormatHelp : "";
         };
-        _type.SelectedIndex = current?.Type == ActionType.OpenWebsite ? 1 : 0;
+        _type.SelectedIndex = current?.Type switch
+        {
+            ActionType.OpenWebsite => 1,
+            ActionType.SendShortcut => 2,
+            _ => 0
+        };
         _target.Text = current?.Type switch
         {
             ActionType.OpenWebsite => current.OpenWebsite ?? "",
             ActionType.OpenFile => current.FilePath ?? "",
+            ActionType.SendShortcut => current.Shortcut ?? "",
             _ => ""
         };
         if (current?.Type == ActionType.RunCommand)
@@ -76,12 +92,13 @@ internal sealed class SettingsForm : Form
                 _target.Text = picker.FileName;
         };
         saveButton.Click += (_, _) => SaveAction();
+        _test.Click += async (_, _) => await TestActionAsync();
     }
 
-    private void SaveAction()
+    private ButtonAction? ReadAction()
     {
         string target = _target.Text.Trim();
-        ButtonAction action;
+        _error.Text = "";
         if (_type.SelectedIndex == 1)
         {
             if (!ButtonAction.TryGetWebsite(target, out var website) &&
@@ -89,19 +106,62 @@ internal sealed class SettingsForm : Form
                  !ButtonAction.TryGetWebsite("https://" + target, out website)))
             {
                 _error.Text = "Enter a valid HTTP or HTTPS website address.";
-                return;
+                return null;
             }
-            action = new ButtonAction { Type = ActionType.OpenWebsite, OpenWebsite = website!.AbsoluteUri };
+            return new ButtonAction { Type = ActionType.OpenWebsite, OpenWebsite = website!.AbsoluteUri };
         }
-        else
+
+        if (_type.SelectedIndex == 2)
         {
-            if (!Path.IsPathFullyQualified(target) || !File.Exists(target))
-            {
-                _error.Text = "Choose an existing app or file.";
-                return;
-            }
-            action = new ButtonAction { Type = ActionType.OpenFile, FilePath = target };
+            if (KeyboardShortcut.TryParse(target, out _))
+                return new ButtonAction { Type = ActionType.SendShortcut, Shortcut = target };
+            _error.Text = KeyboardShortcut.FormatHelp;
+            return null;
         }
+
+        if (Path.IsPathFullyQualified(target) && File.Exists(target))
+            return new ButtonAction { Type = ActionType.OpenFile, FilePath = target };
+
+        _error.Text = "Choose an existing app or file.";
+        return null;
+    }
+
+    private async Task TestActionAsync()
+    {
+        if (ReadAction() is not { } action)
+            return;
+
+        _test.Enabled = false;
+        try
+        {
+            if (action.Type == ActionType.SendShortcut)
+            {
+                _error.Text = "Switch to the window that should receive the shortcut. Sending in 3 seconds.";
+                await Task.Delay(TimeSpan.FromSeconds(3));
+                if (!Visible || !IsHandleCreated)
+                    return;
+                if (ContainsFocus)
+                {
+                    _error.Text = "Switch to another window before the shortcut is sent.";
+                    return;
+                }
+            }
+
+            string? error = await Task.Run(() => _executor.ExecuteAction(action));
+            if (Visible && IsHandleCreated)
+                _error.Text = error ?? "Test action sent.";
+        }
+        finally
+        {
+            if (!IsDisposed)
+                _test.Enabled = true;
+        }
+    }
+
+    private void SaveAction()
+    {
+        if (ReadAction() is not { } action)
+            return;
 
         try
         {

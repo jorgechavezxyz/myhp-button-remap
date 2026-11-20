@@ -8,14 +8,15 @@ namespace HPButtonRemap;
 /// </summary>
 public class WmiEventMonitor : IDisposable
 {
-    private readonly ActionExecutor _executor;
+    private readonly Action<ButtonAction> _execute;
+    private volatile bool _active;
     private ManagementEventWatcher? _watcher;
     private volatile ButtonAction? _action;
     private bool _disposed;
 
-    public WmiEventMonitor(ActionExecutor executor)
+    public WmiEventMonitor(Action<ButtonAction> execute)
     {
-        _executor = executor;
+        _execute = execute;
     }
 
     /// <summary>
@@ -38,7 +39,9 @@ public class WmiEventMonitor : IDisposable
         }
     }
 
-    internal void UpdateAction(ButtonAction action) => _action = action;
+    internal void Activate() => _active = true;
+
+    internal void UpdateAction(ButtonAction? action) => _action = action;
 
     /// <summary>
     /// Register a WMI event handler for configured button event
@@ -61,7 +64,7 @@ public class WmiEventMonitor : IDisposable
         // Set up event handler
         _watcher.EventArrived += (sender, e) =>
         {
-            OnEventArrived(e);
+            OnEventArrived();
         };
 
         // Start watching
@@ -71,12 +74,12 @@ public class WmiEventMonitor : IDisposable
     /// <summary>
     /// Handle WMI event arrival
     /// </summary>
-    private void OnEventArrived(EventArrivedEventArgs e)
+    private void OnEventArrived()
     {
         try
         {
-            if (_action is { } action)
-                _executor.ExecuteAction(action);
+            if (_active && _action is { } action)
+                _execute(action);
         }
         catch (Exception ex)
         {
@@ -89,6 +92,7 @@ public class WmiEventMonitor : IDisposable
     /// </summary>
     public void StopMonitoring()
     {
+        _active = false;
         Debug.WriteLine("Stopping HP WMI Event Monitor...");
 
         if (_watcher == null)
@@ -99,11 +103,14 @@ public class WmiEventMonitor : IDisposable
         try
         {
             _watcher.Stop();
-            _watcher.Dispose();
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"Failed to stop watcher: {ex.Message}");
+        }
+        finally
+        {
+            _watcher.Dispose();
         }
 
         _watcher = null;

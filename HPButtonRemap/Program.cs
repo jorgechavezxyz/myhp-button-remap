@@ -13,9 +13,40 @@ static class Program
             return;
         }
 
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new TrayApplicationContext(args.Contains("--settings", StringComparer.OrdinalIgnoreCase)));
+        // Open the signal before acquiring the mutex so a simultaneous launch can always signal it.
+        using var showSettings = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\HPButtonRemap.Settings.9B7E50F7");
+        using var instance = new Mutex(true, @"Local\HPButtonRemap.Instance.9B7E50F7", out bool first);
+
+        if (!first)
+        {
+            try
+            {
+                first = instance.WaitOne(0);
+            }
+            catch (AbandonedMutexException)
+            {
+                first = true;
+            }
+
+            if (!first)
+            {
+                showSettings.Set();
+                return;
+            }
+        }
+
+        try
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            using var tray = new TrayApplicationContext(
+                showSettings, args.Contains("--settings", StringComparer.OrdinalIgnoreCase));
+            Application.Run(tray);
+        }
+        finally
+        {
+            instance.ReleaseMutex();
+        }
     }
 }
 
@@ -30,6 +61,12 @@ public sealed class TrayApplicationContext : ApplicationContext
     private WmiEventMonitor? _monitor;
     private Config? _currentConfig;
     private SettingsForm? _settings;
+    private readonly Control _ui = new();
+    private readonly RegisteredWaitHandle _settingsWait;
+    private volatile bool _paused;
+    private int _actionRunning;
+    private string? _lastError;
+    private long _lastErrorTime;
     
     private static Icon LoadTrayIcon()
     {
@@ -39,7 +76,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         return stream is not null ? new Icon(stream) : SystemIcons.Application;
     }
 
-    public TrayApplicationContext(bool showSettings = false)
+    public TrayApplicationContext(EventWaitHandle settingsSignal, bool showSettings)
     {
         _executor = new ActionExecutor();
         _configStore = new ConfigStore(AppPaths.ConfigPath);
@@ -60,6 +97,9 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
 
         _trayIcon.DoubleClick += (_, _) => OpenSettings();
+        _ = _ui.Handle;
+        _settingsWait = ThreadPool.RegisterWaitForSingleObject(settingsSignal,
+            (_, _) => PostToTray(OpenSettings), null, Timeout.Infinite, executeOnlyOnce: false);
         ReloadConfiguration();
         if (showSettings)
         {
@@ -80,6 +120,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         var settingsItem = new ToolStripMenuItem("Settings…");
         settingsItem.Click += (_, _) => OpenSettings();
         menu.Items.Add(settingsItem);
+
+        var pause = new ToolStripMenuItem("Pause remapping") { CheckOnClick = true };
+        pause.CheckedChanged += (_, _) =>
+        {
+            _paused = pause.Checked;
+            _trayIcon.Text = _paused ? "HP Button Remap (paused)" : "HP Button Remap";
+        };
+        menu.Items.Add(pause);
 
         var openConfigItem = new ToolStripMenuItem("Open Configuration");
         openConfigItem.Click += (_, _) => OpenConfiguration();
@@ -114,52 +162,94 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void ReloadConfiguration()
     {
+        if (_settings is not null)
+        {
+            Notify("Close Settings before reloading configuration.");
+            return;
+        }
+
+        WmiEventMonitor? replacement = null;
         try
         {
-            _monitor?.Dispose();
-
-            _currentConfig = _configStore.LoadOrCreateDefault();
-            _runAtStartupItem.Checked = _currentConfig.RunAtStartup;
-            _startupShortcutManager.SetStartupEnabled(
-                _currentConfig.RunAtStartup,
-                AppPaths.ExecutablePath,
-                AppPaths.AppDirectory
-            );
-
-            _monitor = new WmiEventMonitor(_executor);
-            _monitor.StartMonitoring(_currentConfig);
-
-            if (_currentConfig.Action == null)
+            var candidate = _configStore.LoadOrCreateDefault();
+            if (_monitor is null || candidate.EffectiveEventID != _currentConfig?.EffectiveEventID ||
+                candidate.EffectiveEventData != _currentConfig?.EffectiveEventData)
             {
-                _trayIcon.ShowBalloonTip(
-                    5000,
-                    "HP Button Remap",
-                    "No action configured. Open config.json to add an Action object.",
-                    ToolTipIcon.Warning
-                );
-                return;
+                replacement = new WmiEventMonitor(RunHotkeyAction);
+                replacement.StartMonitoring(candidate);
             }
 
-            if (_currentConfig.ShowStartupNotification)
+            SetStartupEnabled(candidate.RunAtStartup);
+            if (replacement is not null)
             {
-                _trayIcon.ShowBalloonTip(
-                    2000,
-                    "HP Button Remap",
-                    $"Monitoring EventID={_currentConfig.EffectiveEventID}, EventData={_currentConfig.EffectiveEventData}",
-                    ToolTipIcon.Info
-                );
+                _monitor?.Dispose();
+                _monitor = replacement;
+                replacement = null;
+                _monitor.Activate();
+            }
+
+            _currentConfig = candidate;
+            _monitor!.UpdateAction(candidate.Action);
+            _runAtStartupItem.Checked = candidate.RunAtStartup;
+            if (candidate.ShowStartupNotification)
+            {
+                string message = candidate.Action is null ? "Choose an action in Settings." : "The HP logo key is ready.";
+                _trayIcon.ShowBalloonTip(2000, "HP Button Remap", message, ToolTipIcon.Info);
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                $"Error reloading configuration: {ex.Message}",
-                "HP Button Remap Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error
-            );
+            Notify(_monitor is null
+                ? $"Could not start remapping. {ex.Message}"
+                : $"Could not reload settings. The previous mapping is still active. {ex.Message}");
+        }
+        finally
+        {
+            replacement?.Dispose();
         }
     }
+
+    private void RunHotkeyAction(ButtonAction action)
+    {
+        if (_paused || Interlocked.Exchange(ref _actionRunning, 1) != 0)
+            return;
+
+        try
+        {
+            if (_executor.ExecuteAction(action) is { } error)
+                PostToTray(() => Notify(error));
+        }
+        finally
+        {
+            Volatile.Write(ref _actionRunning, 0);
+        }
+    }
+
+    private void PostToTray(Action callback)
+    {
+        try
+        {
+            _ui.BeginInvoke(callback);
+        }
+        catch (InvalidOperationException)
+        {
+            // The tray is shutting down.
+        }
+    }
+
+    private void Notify(string message)
+    {
+        long now = Environment.TickCount64;
+        if (message == _lastError && now - _lastErrorTime < 8000)
+            return;
+
+        _lastError = message;
+        _lastErrorTime = now;
+        _trayIcon.ShowBalloonTip(4000, "HP Button Remap", message, ToolTipIcon.Warning);
+    }
+
+    private void SetStartupEnabled(bool enabled) =>
+        _startupShortcutManager.SetStartupEnabled(enabled, AppPaths.ExecutablePath, AppPaths.AppDirectory);
 
     private void ToggleRunAtStartup()
     {
@@ -172,23 +262,23 @@ public sealed class TrayApplicationContext : ApplicationContext
         _currentConfig.RunAtStartup = _runAtStartupItem.Checked;
         try
         {
-            _startupShortcutManager.SetStartupEnabled(
-                _currentConfig.RunAtStartup,
-                AppPaths.ExecutablePath,
-                AppPaths.AppDirectory
-            );
+            SetStartupEnabled(_currentConfig.RunAtStartup);
             _configStore.Save(_currentConfig);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                $"Failed to update startup setting: {ex.Message}",
-                "HP Button Remap Error",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error
-            );
             _currentConfig.RunAtStartup = previous;
             _runAtStartupItem.Checked = previous;
+            try
+            {
+                SetStartupEnabled(previous);
+            }
+            catch (Exception rollbackError)
+            {
+                Notify($"Could not restore the startup shortcut. {rollbackError.Message}");
+                return;
+            }
+            Notify($"Could not change startup settings. {ex.Message}");
         }
     }
 
@@ -203,7 +293,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (_currentConfig is not { } config)
             return;
 
-        using var settings = new SettingsForm(config.Action, action =>
+        using var settings = new SettingsForm(config.Action, _executor, action =>
         {
             var previous = config.Action;
             config.Action = action;
@@ -259,7 +349,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         MessageBox.Show(
             "HP Button Remap\n\n" +
-            "Actions: OpenFile, OpenWebsite, RunCommand\n\n" +
+            "Actions: OpenFile, OpenWebsite, SendShortcut, RunCommand\n\n" +
             statusText + "\n\n" +
             "Config: " + AppPaths.ConfigPath + "\n\n" +
             "Right-click the tray icon to access options.",
@@ -364,7 +454,9 @@ del ""{batchPath}""
     {
         if (disposing)
         {
+            _settingsWait.Unregister(null);
             _monitor?.Dispose();
+            _ui.Dispose();
             _trayIcon.Dispose();
         }
         base.Dispose(disposing);
@@ -427,7 +519,27 @@ public sealed class ConfigStore
         }
 
         string json = File.ReadAllText(_configPath);
-        return JsonSerializer.Deserialize<Config>(json, JsonOptions) ?? CreateDefaultConfig();
+        var config = JsonSerializer.Deserialize<Config>(json, JsonOptions)
+            ?? throw new JsonException("The configuration must be a JSON object.");
+        if (config.EffectiveEventID < 0 || config.EffectiveEventData < 0)
+            throw new JsonException("EventID and EventData must be non-negative.");
+
+        if (config.Action is { } action)
+        {
+            bool isValid = action.Type switch
+            {
+                ActionType.OpenFile => action.FilePath is { } path && Path.IsPathFullyQualified(path),
+                ActionType.OpenWebsite => ButtonAction.TryGetWebsite(action.OpenWebsite, out _),
+                ActionType.SendShortcut => KeyboardShortcut.TryParse(action.Shortcut, out _),
+                ActionType.RunCommand => !string.IsNullOrWhiteSpace(action.Command),
+                _ => false
+            };
+
+            if (!isValid)
+                throw new JsonException("The configured action is incomplete or invalid.");
+        }
+
+        return config;
     }
 
     public void Save(Config config)
@@ -484,6 +596,13 @@ public sealed class StartupShortcutManager
             null,
             shortcut,
             new object[] { targetPath }
+        );
+        shortcut.GetType().InvokeMember(
+            "Arguments",
+            System.Reflection.BindingFlags.SetProperty,
+            null,
+            shortcut,
+            new object[] { "--portable" }
         );
         shortcut.GetType().InvokeMember(
             "WorkingDirectory",
@@ -547,12 +666,16 @@ public static class SelfBootstrapper
                 File.Copy(sourceConfig, targetConfig, false);
             }
 
-            Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = installedPath,
                 UseShellExecute = true,
                 WorkingDirectory = AppPaths.InstallDirectory
-            });
+            };
+            if (args.Contains("--settings", StringComparer.OrdinalIgnoreCase))
+                startInfo.ArgumentList.Add("--settings");
+
+            using var process = Process.Start(startInfo);
 
             return true;
         }

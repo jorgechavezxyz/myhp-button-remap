@@ -32,6 +32,7 @@ public class ButtonAction
     public bool? CreateNewWindow { get; set; } = true;
     public string? WorkingDirectory { get; set; }
     public int? DelayMs { get; set; } = 0;
+    public string? Shortcut { get; set; }
     public string? FilePath { get; set; }
     public string? OpenWebsite { get; set; }
 
@@ -61,5 +62,6 @@ public enum ActionType
 {
     RunCommand,
     OpenWebsite,
-    OpenFile
+    OpenFile,
+    SendShortcut
 }

@@ -12,7 +12,7 @@ public class ActionExecutor
     /// <summary>
     /// Execute an action based on its configuration
     /// </summary>
-    public void ExecuteAction(ButtonAction action)
+    public string? ExecuteAction(ButtonAction action)
     {
         try
         {
@@ -32,17 +32,24 @@ public class ActionExecutor
                     OpenWebsite(action);
                     break;
                 case ActionType.OpenFile:
-                    if (action.FilePath is { } file && Path.IsPathFullyQualified(file) && File.Exists(file))
+                    if (action.FilePath is not { } file || !Path.IsPathFullyQualified(file))
+                        return "Choose an app or file in Settings.";
+                    if (!File.Exists(file))
+                        return $"File not found or inaccessible: {Path.GetFileName(file)}";
+                    if (!AppWindowToggle.TryToggle(file))
                         OpenTarget(file);
                     break;
-                default:
-                    Debug.WriteLine($"Unknown action type: {action.Type}");
+                case ActionType.SendShortcut:
+                    KeyboardShortcut.Send(action.Shortcut);
                     break;
+                default:
+                    return "This action type is not supported.";
             }
+            return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException or ArgumentException or UnauthorizedAccessException)
         {
-            Debug.WriteLine($"Failed to execute action: {ex.Message}");
+            return $"Could not run the action. {ex.Message}";
         }
     }
 
@@ -50,8 +57,7 @@ public class ActionExecutor
     {
         if (string.IsNullOrWhiteSpace(action.Command))
         {
-            Debug.WriteLine("Command is not specified");
-            return;
+            throw new InvalidOperationException("No command is configured.");
         }
 
         if (action.EffectiveCreateNewWindow && TryRunCommandDirect(action.Command, action.WorkingDirectory))
@@ -66,7 +72,7 @@ public class ActionExecutor
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = "cmd.exe",
+            FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
             Arguments = arguments,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -78,14 +84,16 @@ public class ActionExecutor
             startInfo.WorkingDirectory = action.WorkingDirectory;
         }
 
-        Process.Start(startInfo);
+        using var process = Process.Start(startInfo);
         Debug.WriteLine($"Executed command: {action.Command}");
     }
 
     private static void OpenWebsite(ButtonAction action)
     {
-        if (ButtonAction.TryGetWebsite(action.OpenWebsite, out var website))
-            OpenTarget(website!.AbsoluteUri);
+        if (!ButtonAction.TryGetWebsite(action.OpenWebsite, out var website))
+            throw new InvalidOperationException("Enter an HTTP or HTTPS address in Settings.");
+
+        OpenTarget(website!.AbsoluteUri);
     }
 
     private static void OpenTarget(string target)
@@ -117,7 +125,7 @@ public class ActionExecutor
             if (!string.IsNullOrWhiteSpace(workingDirectory))
                 startInfo.WorkingDirectory = workingDirectory;
 
-            Process.Start(startInfo);
+            using var process = Process.Start(startInfo);
             return true;
         }
         catch (Win32Exception)
