@@ -15,7 +15,7 @@ static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new TrayApplicationContext());
+        Application.Run(new TrayApplicationContext(args.Contains("--settings", StringComparer.OrdinalIgnoreCase)));
     }
 }
 
@@ -29,6 +29,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private WmiEventMonitor? _monitor;
     private Config? _currentConfig;
+    private SettingsForm? _settings;
     
     private static Icon LoadTrayIcon()
     {
@@ -38,7 +39,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         return stream is not null ? new Icon(stream) : SystemIcons.Application;
     }
 
-    public TrayApplicationContext()
+    public TrayApplicationContext(bool showSettings = false)
     {
         _executor = new ActionExecutor();
         _configStore = new ConfigStore(AppPaths.ConfigPath);
@@ -58,12 +59,27 @@ public sealed class TrayApplicationContext : ApplicationContext
             Text = "HP Button Remap"
         };
 
+        _trayIcon.DoubleClick += (_, _) => OpenSettings();
         ReloadConfiguration();
+        if (showSettings)
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = 1 };
+            timer.Tick += (_, _) =>
+            {
+                timer.Dispose();
+                OpenSettings();
+            };
+            timer.Start();
+        }
     }
 
     private ContextMenuStrip CreateContextMenu()
     {
         var menu = new ContextMenuStrip();
+
+        var settingsItem = new ToolStripMenuItem("Settings…");
+        settingsItem.Click += (_, _) => OpenSettings();
+        menu.Items.Add(settingsItem);
 
         var openConfigItem = new ToolStripMenuItem("Open Configuration");
         openConfigItem.Click += (_, _) => OpenConfiguration();
@@ -84,7 +100,8 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         var uninstallItem = new ToolStripMenuItem("Uninstall...");
         uninstallItem.Click += (_, _) => ShowUninstall();
-        menu.Items.Add(uninstallItem);
+        if (!AppPaths.IsMsiManaged)
+            menu.Items.Add(uninstallItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
@@ -175,6 +192,44 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void OpenSettings()
+    {
+        if (_settings is not null)
+        {
+            _settings.Activate();
+            return;
+        }
+
+        if (_currentConfig is not { } config)
+            return;
+
+        using var settings = new SettingsForm(config.Action, action =>
+        {
+            var previous = config.Action;
+            config.Action = action;
+            try
+            {
+                _configStore.Save(config);
+            }
+            catch
+            {
+                config.Action = previous;
+                throw;
+            }
+            _monitor?.UpdateAction(action);
+        });
+
+        _settings = settings;
+        try
+        {
+            settings.ShowDialog();
+        }
+        finally
+        {
+            _settings = null;
+        }
+    }
+
     private static void OpenConfiguration()
     {
         try
@@ -204,7 +259,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         MessageBox.Show(
             "HP Button Remap\n\n" +
-            "Actions: RunCommand, OpenWebsite\n\n" +
+            "Actions: OpenFile, OpenWebsite, RunCommand\n\n" +
             statusText + "\n\n" +
             "Config: " + AppPaths.ConfigPath + "\n\n" +
             "Right-click the tray icon to access options.",
@@ -327,10 +382,13 @@ public static class AppPaths
 
     public static string AppDirectory => Path.GetFullPath(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
     public static string ExecutablePath => Environment.ProcessPath ?? InstalledExecutablePath;
-    public static string ConfigPath => Path.Combine(AppDirectory, "config.json");
+    public static bool IsMsiManaged { get; } = File.Exists(Path.Combine(AppContext.BaseDirectory, "msi-managed.txt"));
+    public static string ConfigPath => IsMsiManaged
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HPButtonRemapGUI", "config.json")
+        : Path.Combine(AppDirectory, "config.json");
     public static string StartupShortcutPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.Startup),
-        "HP Button Remap.lnk"
+        IsMsiManaged ? "HP Button Remap GUI.lnk" : "HP Button Remap.lnk"
     );
 
     public static bool IsRunningFromManagedInstallDirectory =>
@@ -374,17 +432,27 @@ public sealed class ConfigStore
 
     public void Save(Config config)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(_configPath)!);
         string json = JsonSerializer.Serialize(config, JsonOptions);
-        File.WriteAllText(_configPath, json);
+        string temporaryPath = _configPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporaryPath, json);
+            File.Move(temporaryPath, _configPath, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporaryPath);
+        }
     }
 
     private static Config CreateDefaultConfig() => new()
     {
         ShowStartupNotification = true,
-        RunAtStartup = true,
+        RunAtStartup = !AppPaths.IsMsiManaged,
         EventID = 29,
         EventData = 8616,
-        Action = ButtonAction.CreateDefault()
+        Action = AppPaths.IsMsiManaged ? null : ButtonAction.CreateDefault()
     };
 }
 
@@ -448,7 +516,7 @@ public static class SelfBootstrapper
 #if DEBUG
         return false;
 #else
-        if (args.Any(arg => string.Equals(arg, "--portable", StringComparison.OrdinalIgnoreCase)))
+        if (AppPaths.IsMsiManaged || args.Any(arg => string.Equals(arg, "--portable", StringComparison.OrdinalIgnoreCase)))
         {
             return false;
         }

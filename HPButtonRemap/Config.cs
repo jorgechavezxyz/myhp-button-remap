@@ -11,7 +11,7 @@ public class Config
     public bool RunAtStartup { get; set; } = true;
     public int? EventID { get; set; } = 29;
     public int? EventData { get; set; } = 8616;
-    public ButtonAction Action { get; set; } = ButtonAction.CreateDefault();
+    public ButtonAction? Action { get; set; } = ButtonAction.CreateDefault();
 
     [JsonIgnore]
     public int EffectiveEventID => EventID ?? 29;
@@ -32,6 +32,7 @@ public class ButtonAction
     public bool? CreateNewWindow { get; set; } = true;
     public string? WorkingDirectory { get; set; }
     public int? DelayMs { get; set; } = 0;
+    public string? FilePath { get; set; }
     public string? OpenWebsite { get; set; }
 
     [JsonIgnore]
@@ -39,6 +40,11 @@ public class ButtonAction
 
     [JsonIgnore]
     public int EffectiveDelayMs => DelayMs ?? 0;
+
+    internal static bool TryGetWebsite(string? value, out Uri? website) =>
+        Uri.TryCreate(value, UriKind.Absolute, out website) &&
+        website.Scheme is "http" or "https" && website.Host.Length > 0 &&
+        website.UserInfo.Length == 0;
 
     public static ButtonAction CreateDefault() => new()
     {
@@ -54,5 +60,6 @@ public class ButtonAction
 public enum ActionType
 {
     RunCommand,
-    OpenWebsite
+    OpenWebsite,
+    OpenFile
 }

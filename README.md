@@ -96,3 +96,15 @@ dotnet publish .\HPButtonRemap\HPButtonRemap.csproj `
   -p:PublishSingleFile=true `
   --output .\publish\app
 ```
+
+## Change what the key opens
+
+Double-click the tray icon or choose **Settings…** from its menu. Choose **Open an app or file** and browse for an executable or document, or choose **Open a website** and enter an HTTP or HTTPS address. Click **Save** to apply the new action immediately. Existing command configurations still work and can be edited through **Open Configuration**.
+
+For a portable run, use `HPButtonRemap.exe --portable --settings`. Set `RunAtStartup` to `false` in the adjacent config if you want to start it manually.
+
+## Windows installer
+
+Run the Windows x64 MSI and open **HP Button Remap GUI** from Start. Installation is per-user, includes the required .NET runtime, and leaves the hotkey unassigned and login startup disabled on first launch. To uninstall, exit the tray app and remove **HP Button Remap GUI** from **Settings → Apps → Installed apps**. Your mapping is retained in `%LOCALAPPDATA%\HPButtonRemapGUI\config.json` for reinstall.
+
+The release workflow builds the MSI from `installer/Package.wxs` with WiX.

@@ -31,6 +31,10 @@ public class ActionExecutor
                 case ActionType.OpenWebsite:
                     OpenWebsite(action);
                     break;
+                case ActionType.OpenFile:
+                    if (action.FilePath is { } file && Path.IsPathFullyQualified(file) && File.Exists(file))
+                        OpenTarget(file);
+                    break;
                 default:
                     Debug.WriteLine($"Unknown action type: {action.Type}");
                     break;
@@ -80,19 +84,17 @@ public class ActionExecutor
 
     private static void OpenWebsite(ButtonAction action)
     {
-        if (string.IsNullOrWhiteSpace(action.OpenWebsite))
-        {
-            Debug.WriteLine("URL is not specified");
-            return;
-        }
+        if (ButtonAction.TryGetWebsite(action.OpenWebsite, out var website))
+            OpenTarget(website!.AbsoluteUri);
+    }
 
-        Process.Start(new ProcessStartInfo
+    private static void OpenTarget(string target)
+    {
+        using var process = Process.Start(new ProcessStartInfo
         {
-            FileName = action.OpenWebsite,
+            FileName = target,
             UseShellExecute = true
         });
-
-        Debug.WriteLine($"Opened URL: {action.OpenWebsite}");
     }
 
     private static bool TryRunCommandDirect(string command, string? workingDirectory)

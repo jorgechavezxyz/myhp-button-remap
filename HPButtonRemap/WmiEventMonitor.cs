@@ -10,7 +10,7 @@ public class WmiEventMonitor : IDisposable
 {
     private readonly ActionExecutor _executor;
     private ManagementEventWatcher? _watcher;
-    private ButtonAction? _action;
+    private volatile ButtonAction? _action;
     private bool _disposed;
 
     public WmiEventMonitor(ActionExecutor executor)
@@ -26,22 +26,19 @@ public class WmiEventMonitor : IDisposable
         Debug.WriteLine("Starting HP WMI Event Monitor...");
         StopMonitoring();
 
-        if (config.Action == null)
-        {
-            Debug.WriteLine("No action configured.");
-            return;
-        }
-
         try
         {
             RegisterEventHandler(config);
             Debug.WriteLine($"Monitoring EventID={config.EffectiveEventID}, EventData={config.EffectiveEventData}");
         }
-        catch (Exception ex)
+        catch
         {
-            Debug.WriteLine($"Failed to register watcher: {ex.Message}");
+            StopMonitoring();
+            throw;
         }
     }
+
+    internal void UpdateAction(ButtonAction action) => _action = action;
 
     /// <summary>
     /// Register a WMI event handler for configured button event
@@ -78,13 +75,8 @@ public class WmiEventMonitor : IDisposable
     {
         try
         {
-            if (_action == null)
-            {
-                return;
-            }
-
-            // Execute the configured action
-            _executor.ExecuteAction(_action);
+            if (_action is { } action)
+                _executor.ExecuteAction(action);
         }
         catch (Exception ex)
         {
